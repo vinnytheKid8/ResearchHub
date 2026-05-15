@@ -25,7 +25,8 @@ export const items = sqliteTable("items", {
   // File-only fields
   mimeType: text("mime_type"),
   size: integer("size"),
-  content: text("content"), // raw text for HTML/text, base64 for binary
+  content: text("content"), // raw text for HTML/text, base64 for binary (small files & legacy)
+  storagePath: text("storage_path"), // when set, file lives on disk under HUB_DATA_DIR/uploads/<path>
   isText: integer("is_text").notNull().default(1),
 
   // Link-only field

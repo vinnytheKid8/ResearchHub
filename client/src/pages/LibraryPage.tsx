@@ -109,31 +109,50 @@ export default function LibraryPage() {
   }, [collectionId]);
 
   // ============ Mutations ============
+  // Streaming uploads via XHR + multipart. Tracks per-file progress and surfaces it via toast.
   const uploadMutation = useMutation({
     mutationFn: async (files: FileList | File[]) => {
       const targetCol = typeof collectionId === 'number' ? collectionId : null;
       const arr = Array.from(files);
+      if (arr.length === 0) return 0;
+
+      // Show a single progress toast for the batch; update on each file.
+      const progressToast = toast({
+        title: arr.length === 1 ? `Uploading ${arr[0].name}` : `Uploading ${arr.length} files`,
+        description: '0%',
+      });
+
+      let completed = 0;
       for (const file of arr) {
-        const isText =
-          file.type.startsWith('text/') ||
-          file.type.includes('html') ||
-          file.type.includes('json') ||
-          file.type.includes('xml') ||
-          file.type.includes('svg') ||
-          file.type.includes('csv') ||
-          /\.(html?|css|js|md|txt|csv|json|xml|svg)$/i.test(file.name);
-        const content = isText ? await file.text() : await fileToBase64(file);
-        await api.createFileItem({
+        await api.uploadFile(file, {
           name: file.name,
-          mimeType: file.type || guessMime(file.name),
-          content,
-          isText,
           collectionId: targetCol,
+          onProgress: (loaded, total) => {
+            const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+            const overall =
+              arr.length === 1
+                ? `${pct}%`
+                : `${completed + 1}/${arr.length} · ${pct}%`;
+            progressToast.update({
+              id: progressToast.id,
+              title:
+                arr.length === 1
+                  ? `Uploading ${file.name}`
+                  : `Uploading ${arr.length} files`,
+              description: overall,
+            });
+          },
         });
+        completed++;
       }
+      progressToast.dismiss();
       return arr.length;
     },
     onSuccess: (n) => {
+      if (n === 0) {
+        toast({ title: 'Nothing to upload' });
+        return;
+      }
       toast({ title: `Uploaded ${n} file${n === 1 ? '' : 's'}` });
       queryClient.invalidateQueries({ queryKey: ['/api/items'] });
       queryClient.invalidateQueries({ queryKey: ['/api/collections'] });
@@ -363,7 +382,11 @@ export default function LibraryPage() {
               accept=".html,.htm,text/html,*/*"
               onChange={(e) => {
                 if (e.target.files?.length) {
-                  uploadMutation.mutate(e.target.files);
+                  // Snapshot files to a stable array BEFORE clearing the input.
+                  // FileList is live — clearing the input nulls it out before the
+                  // async mutationFn runs, which is why uploads silently dropped.
+                  const snapshot = Array.from(e.target.files);
+                  uploadMutation.mutate(snapshot);
                   e.target.value = '';
                 }
               }}
@@ -983,40 +1006,3 @@ function EditItemDialog({
   );
 }
 
-// ============ helpers ============
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => {
-      const result = r.result as string;
-      const i = result.indexOf(',');
-      resolve(i >= 0 ? result.slice(i + 1) : result);
-    };
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-}
-
-function guessMime(name: string): string {
-  const ext = name.split('.').pop()?.toLowerCase();
-  const map: Record<string, string> = {
-    html: 'text/html',
-    htm: 'text/html',
-    css: 'text/css',
-    js: 'application/javascript',
-    json: 'application/json',
-    xml: 'application/xml',
-    svg: 'image/svg+xml',
-    csv: 'text/csv',
-    md: 'text/markdown',
-    txt: 'text/plain',
-    pdf: 'application/pdf',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-  };
-  return ext && map[ext] ? map[ext] : 'application/octet-stream';
-}

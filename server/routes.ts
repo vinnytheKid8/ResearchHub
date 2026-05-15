@@ -1,7 +1,27 @@
 import type { Express, Request, Response } from 'express';
 import type { Server } from 'node:http';
-import { storage } from './storage';
+import { storage, UPLOADS_DIR, resolveStoragePath } from './storage';
 import { insertCollectionSchema, insertItemSchema } from '@shared/schema';
+import Busboy from 'busboy';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+// Per-file upload cap. Default 5 GB; override with HUB_MAX_UPLOAD_MB.
+const MAX_UPLOAD_BYTES =
+  (parseInt(process.env.HUB_MAX_UPLOAD_MB || '5120', 10) || 5120) * 1024 * 1024;
+
+function inferIsTextFromMime(mime: string): boolean {
+  return (
+    mime.startsWith('text/') ||
+    mime.includes('html') ||
+    mime.includes('json') ||
+    mime.includes('xml') ||
+    mime.includes('svg') ||
+    mime.includes('csv') ||
+    mime.includes('javascript')
+  );
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // ============ HEALTH ============
@@ -143,19 +163,187 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
-  // Raw content for inline iframe rendering of file items
+  // ============ STREAMING MULTIPART UPLOAD ============
+  // Streams a file straight to disk under HUB_DATA_DIR/uploads/, creates a DB row
+  // pointing at it. Memory footprint stays flat regardless of file size.
+  app.post('/api/items/upload', (req: Request, res: Response) => {
+    let bb: ReturnType<typeof Busboy>;
+    try {
+      bb = Busboy({
+        headers: req.headers,
+        limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+      });
+    } catch (e: any) {
+      return res.status(400).json({ error: `invalid multipart request: ${e.message}` });
+    }
+
+    const fields: Record<string, string> = {};
+    let fileInfo: {
+      tempPath: string;
+      relPath: string;
+      filename: string;
+      mimeType: string;
+      size: number;
+      tooLarge: boolean;
+      writeErr: Error | null;
+    } | null = null;
+    let writePromise: Promise<void> = Promise.resolve();
+    let aborted = false;
+
+    bb.on('field', (name, val) => {
+      fields[name] = val;
+    });
+
+    bb.on('file', (_name, fileStream, info) => {
+      if (fileInfo) {
+        // Already received one; drain extras
+        fileStream.resume();
+        return;
+      }
+      // Generate a unique on-disk path. Format: YYYY/MM/<random>.bin
+      const now = new Date();
+      const y = String(now.getUTCFullYear());
+      const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const rand = crypto.randomBytes(12).toString('hex');
+      const safeOriginal = String(info.filename || 'upload').replace(/[^\w.\-]+/g, '_').slice(0, 80);
+      const relPath = path.posix.join(y, m, `${rand}_${safeOriginal}`);
+      const absDir = path.join(UPLOADS_DIR, y, m);
+      fs.mkdirSync(absDir, { recursive: true });
+      const absPath = path.join(UPLOADS_DIR, y, m, `${rand}_${safeOriginal}`);
+
+      fileInfo = {
+        tempPath: absPath,
+        relPath,
+        filename: info.filename || safeOriginal,
+        mimeType: info.mimeType || 'application/octet-stream',
+        size: 0,
+        tooLarge: false,
+        writeErr: null,
+      };
+
+      const ws = fs.createWriteStream(absPath);
+      writePromise = new Promise<void>((resolve) => {
+        fileStream.on('data', (chunk: Buffer) => {
+          if (fileInfo) fileInfo.size += chunk.length;
+        });
+        fileStream.on('limit', () => {
+          if (fileInfo) fileInfo.tooLarge = true;
+          fileStream.unpipe(ws);
+          ws.destroy();
+        });
+        ws.on('error', (err) => {
+          if (fileInfo) fileInfo.writeErr = err;
+          resolve();
+        });
+        ws.on('close', () => resolve());
+        fileStream.pipe(ws);
+      });
+    });
+
+    bb.on('error', (err: Error) => {
+      aborted = true;
+      console.error('[hub] upload busboy error:', err);
+      if (!res.headersSent) res.status(400).json({ error: err.message });
+    });
+
+    bb.on('close', async () => {
+      if (aborted) return;
+      await writePromise;
+
+      if (!fileInfo) {
+        return res.status(400).json({ error: 'no file in upload' });
+      }
+      if (fileInfo.tooLarge) {
+        fs.unlink(fileInfo.tempPath, () => {});
+        return res.status(413).json({
+          error: `file exceeds limit of ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024)} MB`,
+        });
+      }
+      if (fileInfo.writeErr) {
+        fs.unlink(fileInfo.tempPath, () => {});
+        return res.status(500).json({ error: `write failed: ${fileInfo.writeErr.message}` });
+      }
+
+      try {
+        const name = fields.name || fileInfo.filename;
+        const mimeType = fields.mimeType || fileInfo.mimeType || 'text/html';
+        const isText = inferIsTextFromMime(mimeType) ? 1 : 0;
+        const collectionIdRaw = fields.collectionId;
+        const collectionId =
+          collectionIdRaw && collectionIdRaw !== 'null' && collectionIdRaw !== ''
+            ? parseInt(collectionIdRaw, 10)
+            : null;
+        let tags: string[] = [];
+        if (fields.tags) {
+          try {
+            const parsed = JSON.parse(fields.tags);
+            if (Array.isArray(parsed)) tags = parsed.map(String);
+          } catch {
+            tags = fields.tags.split(',').map((t) => t.trim()).filter(Boolean);
+          }
+        }
+
+        const created = await storage.createItem({
+          kind: 'file',
+          name,
+          description: fields.description || null,
+          mimeType,
+          size: fileInfo.size,
+          content: null, // on-disk
+          storagePath: fileInfo.relPath,
+          isText,
+          url: null,
+          collectionId,
+          tags: JSON.stringify(tags),
+        });
+        const { content: _c, ...rest } = created;
+        res.json(rest);
+      } catch (err: any) {
+        fs.unlink(fileInfo.tempPath, () => {});
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    req.pipe(bb);
+  });
+
+  // Raw content for inline iframe rendering of file items.
+  // Streams from disk when storagePath is set; falls back to inline content for legacy/small items.
   app.get('/api/items/:id/raw', async (req, res) => {
     const it = await storage.getItem(parseInt(req.params.id, 10));
     if (!it) return res.status(404).send('Not found');
-    if (it.kind !== 'file' || !it.content) return res.status(404).send('Not a file');
+    if (it.kind !== 'file') return res.status(404).send('Not a file');
+
     res.setHeader('content-type', it.mimeType || 'text/html; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
     if (req.query.download === '1') {
       res.setHeader(
         'content-disposition',
         `attachment; filename="${encodeURIComponent(it.name)}"`,
       );
     }
-    res.setHeader('cache-control', 'no-store');
+
+    if (it.storagePath) {
+      try {
+        const abs = resolveStoragePath(it.storagePath);
+        if (it.size != null) res.setHeader('content-length', String(it.size));
+        const stream = fs.createReadStream(abs);
+        stream.on('error', (err: any) => {
+          if (!res.headersSent) {
+            if (err.code === 'ENOENT') res.status(404).send('File missing on disk');
+            else res.status(500).send('Read error');
+          } else {
+            res.destroy();
+          }
+        });
+        stream.pipe(res);
+        return;
+      } catch (err: any) {
+        return res.status(500).send(err.message);
+      }
+    }
+
+    if (it.content == null) return res.status(404).send('No content');
     if (it.isText) res.send(it.content);
     else res.send(Buffer.from(it.content, 'base64'));
   });
@@ -169,13 +357,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.redirect(it.url);
       return;
     }
-    if (it.kind === 'file' && it.content) {
-      // Send raw file directly so URLs and JS work as authored
+    if (it.kind === 'file') {
       res.setHeader('content-type', it.mimeType || 'text/html; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
-      if (it.isText) res.send(it.content);
-      else res.send(Buffer.from(it.content, 'base64'));
-      return;
+      if (it.storagePath) {
+        try {
+          const abs = resolveStoragePath(it.storagePath);
+          if (it.size != null) res.setHeader('content-length', String(it.size));
+          const stream = fs.createReadStream(abs);
+          stream.on('error', (err: any) => {
+            if (!res.headersSent) {
+              if (err.code === 'ENOENT') res.status(404).send('File missing on disk');
+              else res.status(500).send('Read error');
+            } else res.destroy();
+          });
+          stream.pipe(res);
+          return;
+        } catch (err: any) {
+          return res.status(500).send(err.message);
+        }
+      }
+      if (it.content != null) {
+        if (it.isText) res.send(it.content);
+        else res.send(Buffer.from(it.content, 'base64'));
+        return;
+      }
     }
     res.status(404).send('Not found');
   });

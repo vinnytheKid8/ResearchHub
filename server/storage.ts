@@ -3,9 +3,18 @@ import type { Collection, InsertCollection, Item, InsertItem } from '@shared/sch
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
 import { eq, asc } from 'drizzle-orm';
+import path from 'node:path';
+import fs from 'node:fs';
 
-const sqlite = new Database('data.db');
+// Data directory: configurable via HUB_DATA_DIR. Defaults to project cwd for backward compat.
+export const DATA_DIR = path.resolve(process.env.HUB_DATA_DIR || process.cwd());
+export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const dbPath = path.join(DATA_DIR, 'data.db');
+const sqlite = new Database(dbPath);
 sqlite.pragma('journal_mode = WAL');
+console.log(`[hub] data dir: ${DATA_DIR}`);
 
 // Bootstrap tables (drizzle migrations not wired in template)
 sqlite.exec(`
@@ -26,6 +35,7 @@ sqlite.exec(`
     size INTEGER,
     content TEXT,
     is_text INTEGER NOT NULL DEFAULT 1,
+    storage_path TEXT,
     url TEXT,
     collection_id INTEGER,
     tags TEXT NOT NULL DEFAULT '[]',
@@ -37,6 +47,17 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
 `);
 
+// Lazy migration for existing DBs created before storage_path existed.
+try {
+  const cols = sqlite.prepare("PRAGMA table_info(items)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'storage_path')) {
+    sqlite.exec(`ALTER TABLE items ADD COLUMN storage_path TEXT`);
+    console.log('[hub] migrated items table: added storage_path');
+  }
+} catch (err) {
+  console.error('[hub] migration check failed:', err);
+}
+
 export const db = drizzle(sqlite);
 
 // Item shape returned to clients without heavy `content` payload
@@ -45,6 +66,16 @@ export type ItemSummary = Omit<Item, 'content'>;
 function summarize(row: Item): ItemSummary {
   const { content: _content, ...rest } = row;
   return rest;
+}
+
+// Resolve a storage_path stored in the DB to an absolute path under UPLOADS_DIR.
+// Refuses paths that escape the uploads dir (defense-in-depth against tampered DBs).
+export function resolveStoragePath(storagePath: string): string {
+  const abs = path.resolve(UPLOADS_DIR, storagePath);
+  if (!abs.startsWith(UPLOADS_DIR + path.sep) && abs !== UPLOADS_DIR) {
+    throw new Error(`storage path escapes uploads dir: ${storagePath}`);
+  }
+  return abs;
 }
 
 export interface IStorage {
@@ -146,6 +177,15 @@ export class DatabaseStorage implements IStorage {
       .get();
   }
   async deleteItem(id: number) {
+    // Clean up on-disk file if any
+    const row = db.select().from(items).where(eq(items.id, id)).get();
+    if (row?.storagePath) {
+      try {
+        fs.unlinkSync(resolveStoragePath(row.storagePath));
+      } catch (err: any) {
+        if (err?.code !== 'ENOENT') console.error('[hub] failed to delete file', row.storagePath, err);
+      }
+    }
     db.delete(items).where(eq(items.id, id)).run();
   }
   async reorderItems(ids: number[]) {

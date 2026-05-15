@@ -51,17 +51,53 @@ export const api = {
     if (params?.kind) q.push(`kind=${params.kind}`);
     return getJSON<{ items: Item[] }>(`/api/items${q.length ? `?${q.join('&')}` : ''}`);
   },
-  createFileItem: async (data: {
-    name: string;
-    description?: string;
-    mimeType: string;
-    content: string;
-    isText: boolean;
-    collectionId?: number | null;
-    tags?: string[];
-  }) => {
-    const r = await apiRequest('POST', '/api/items', { kind: 'file', ...data });
-    return r.json();
+  /**
+   * Stream a File straight to the server via multipart/form-data.
+   * Handles files of any size (up to HUB_MAX_UPLOAD_MB on the server, default 5 GB)
+   * without buffering them into memory.
+   */
+  uploadFile: async (
+    file: File,
+    opts?: {
+      name?: string;
+      description?: string;
+      collectionId?: number | null;
+      tags?: string[];
+      onProgress?: (loaded: number, total: number) => void;
+    },
+  ): Promise<Item> => {
+    const form = new FormData();
+    form.append('name', opts?.name || file.name);
+    if (opts?.description) form.append('description', opts.description);
+    if (opts?.collectionId != null) form.append('collectionId', String(opts.collectionId));
+    if (opts?.tags) form.append('tags', JSON.stringify(opts.tags));
+    if (file.type) form.append('mimeType', file.type);
+    form.append('file', file, file.name);
+
+    // Use XHR so we get upload progress; fetch() doesn't expose upload progress.
+    return new Promise<Item>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/items/upload');
+      xhr.responseType = 'json';
+      if (opts?.onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) opts.onProgress!(e.loaded, e.total);
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.response as Item);
+        } else {
+          const msg =
+            (xhr.response && xhr.response.error) ||
+            `upload failed (HTTP ${xhr.status})`;
+          reject(new Error(msg));
+        }
+      };
+      xhr.onerror = () => reject(new Error('network error during upload'));
+      xhr.onabort = () => reject(new Error('upload aborted'));
+      xhr.send(form);
+    });
   },
   createLinkItem: async (data: {
     name: string;
