@@ -39,6 +39,7 @@ sqlite.exec(`
     url TEXT,
     collection_id INTEGER,
     tags TEXT NOT NULL DEFAULT '[]',
+    tagged_users TEXT NOT NULL DEFAULT '[]',
     position INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -53,6 +54,10 @@ try {
   if (!cols.some((c) => c.name === 'storage_path')) {
     sqlite.exec(`ALTER TABLE items ADD COLUMN storage_path TEXT`);
     console.log('[hub] migrated items table: added storage_path');
+  }
+  if (!cols.some((c) => c.name === 'tagged_users')) {
+    sqlite.exec(`ALTER TABLE items ADD COLUMN tagged_users TEXT NOT NULL DEFAULT '[]'`);
+    console.log('[hub] migrated items table: added tagged_users');
   }
 } catch (err) {
   console.error('[hub] migration check failed:', err);

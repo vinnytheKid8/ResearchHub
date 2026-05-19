@@ -1,7 +1,7 @@
 import { useState, useRef, useMemo, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useLocation, useRoute } from 'wouter';
-import { api, Collection, Item, safeTags, formatBytes } from '@/lib/api';
+import { api, Collection, Item, safeTags, safeUsers, formatBytes, formatUploadedAt } from '@/lib/api';
 import { queryClient } from '@/lib/queryClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -46,6 +46,8 @@ import {
   Inbox,
   X,
   Tag as TagIcon,
+  Users as UsersIcon,
+  Clock,
 } from 'lucide-react';
 
 type ViewMode = 'grid' | 'list';
@@ -97,7 +99,8 @@ export default function LibraryPage() {
         i.name.toLowerCase().includes(q) ||
         (i.url || '').toLowerCase().includes(q) ||
         (i.description || '').toLowerCase().includes(q) ||
-        safeTags(i.tags).some((t) => t.toLowerCase().includes(q)),
+        safeTags(i.tags).some((t) => t.toLowerCase().includes(q)) ||
+        safeUsers(i.taggedUsers).some((u) => u.toLowerCase().includes(q)),
     );
   }, [items, search]);
 
@@ -161,7 +164,12 @@ export default function LibraryPage() {
   });
 
   const addLinkMutation = useMutation({
-    mutationFn: async (data: { name: string; url: string; description: string }) => {
+    mutationFn: async (data: {
+      name: string;
+      url: string;
+      description: string;
+      taggedUsers: string[];
+    }) => {
       const targetCol = typeof collectionId === 'number' ? collectionId : null;
       return api.createLinkItem({ ...data, collectionId: targetCol });
     },
@@ -524,6 +532,8 @@ function ItemCard({
   onMove: (collectionId: number | null) => void;
 }) {
   const tags = safeTags(item.tags);
+  const users = safeUsers(item.taggedUsers);
+  const uploadedAt = formatUploadedAt(item.createdAt);
   const isLink = item.kind === 'link';
   const opensTo = isLink ? item.url || '' : api.viewUrl(item.id);
   const fileExt = item.kind === 'file' ? (item.name.split('.').pop() || 'file').toLowerCase() : null;
@@ -633,20 +643,41 @@ function ItemCard({
         )}
       </div>
 
-      <div className="mt-auto flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-        <div className="flex items-center gap-1 flex-wrap">
-          {tags.slice(0, 3).map((t) => (
-            <Badge
-              key={t}
-              variant="outline"
-              className="text-[9px] h-4 px-1.5 leading-none"
-            >
-              {t}
-            </Badge>
-          ))}
-        </div>
-        <div className="shrink-0 tabular-nums">
-          {item.kind === 'file' ? formatBytes(item.size) : 'Web link'}
+      <div className="mt-auto flex flex-col gap-1.5 text-[10px] text-muted-foreground">
+        {(tags.length > 0 || users.length > 0) && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {users.slice(0, 3).map((u) => (
+              <Badge
+                key={`u-${u}`}
+                variant="secondary"
+                className="text-[9px] h-4 px-1.5 leading-none gap-0.5"
+                title={`Tagged user: ${u}`}
+              >
+                <UsersIcon className="w-2.5 h-2.5" />@{u}
+              </Badge>
+            ))}
+            {tags.slice(0, 3).map((t) => (
+              <Badge
+                key={`t-${t}`}
+                variant="outline"
+                className="text-[9px] h-4 px-1.5 leading-none"
+              >
+                {t}
+              </Badge>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <div
+            className="flex items-center gap-1 truncate"
+            title={uploadedAt ? `Uploaded ${uploadedAt}` : undefined}
+          >
+            <Clock className="w-2.5 h-2.5 shrink-0" />
+            <span className="truncate">{uploadedAt || 'Just now'}</span>
+          </div>
+          <div className="shrink-0 tabular-nums">
+            {item.kind === 'file' ? formatBytes(item.size) : 'Web link'}
+          </div>
         </div>
       </div>
     </div>
@@ -664,6 +695,8 @@ function PreviewPane({
 }) {
   const isLink = item.kind === 'link';
   const tags = safeTags(item.tags);
+  const users = safeUsers(item.taggedUsers);
+  const uploadedAt = formatUploadedAt(item.createdAt);
   return (
     <>
       <div className="px-4 py-3 border-b border-border flex items-center gap-2 bg-background">
@@ -703,19 +736,35 @@ function PreviewPane({
           <X className="w-4 h-4" />
         </Button>
       </div>
-      {(item.description || tags.length > 0) && (
-        <div className="px-4 py-2 border-b border-border bg-background">
+      {(item.description || tags.length > 0 || users.length > 0 || uploadedAt) && (
+        <div className="px-4 py-2 border-b border-border bg-background space-y-1.5">
           {item.description && (
             <div className="text-xs text-muted-foreground">{item.description}</div>
           )}
+          {users.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <UsersIcon className="w-3 h-3 text-muted-foreground" />
+              {users.map((u) => (
+                <Badge key={u} variant="secondary" className="text-[10px] h-4 px-1.5 leading-none">
+                  @{u}
+                </Badge>
+              ))}
+            </div>
+          )}
           {tags.length > 0 && (
-            <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap">
               <TagIcon className="w-3 h-3 text-muted-foreground" />
               {tags.map((t) => (
                 <Badge key={t} variant="outline" className="text-[10px] h-4 px-1.5 leading-none">
                   {t}
                 </Badge>
               ))}
+            </div>
+          )}
+          {uploadedAt && (
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Clock className="w-3 h-3" />
+              <span>Uploaded {uploadedAt}</span>
             </div>
           )}
         </div>
@@ -816,17 +865,19 @@ function AddLinkDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSubmit: (data: { name: string; url: string; description: string }) => void;
+  onSubmit: (data: { name: string; url: string; description: string; taggedUsers: string[] }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
+  const [taggedUsers, setTaggedUsers] = useState('');
   useEffect(() => {
     if (open) {
       setName('');
       setUrl('');
       setDescription('');
+      setTaggedUsers('');
     }
   }, [open]);
   const valid = name.trim() && (() => {
@@ -881,6 +932,15 @@ function AddLinkDialog({
               data-testid="input-link-description"
             />
           </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Tagged users (optional, comma-separated)</label>
+            <Input
+              placeholder="alice, bob"
+              value={taggedUsers}
+              onChange={(e) => setTaggedUsers(e.target.value)}
+              data-testid="input-link-tagged-users"
+            />
+          </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
@@ -888,7 +948,17 @@ function AddLinkDialog({
           </Button>
           <Button
             disabled={!valid || loading}
-            onClick={() => onSubmit({ name: name.trim(), url: url.trim(), description: description.trim() })}
+            onClick={() =>
+              onSubmit({
+                name: name.trim(),
+                url: url.trim(),
+                description: description.trim(),
+                taggedUsers: taggedUsers
+                  .split(',')
+                  .map((u) => u.trim().replace(/^@+/, ''))
+                  .filter(Boolean),
+              })
+            }
             data-testid="button-link-submit"
           >
             Add link
@@ -916,6 +986,7 @@ function EditItemDialog({
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
+  const [taggedUsers, setTaggedUsers] = useState('');
   const [collectionId, setCollectionId] = useState<string>('null');
   useEffect(() => {
     if (item) {
@@ -923,6 +994,7 @@ function EditItemDialog({
       setUrl(item.url || '');
       setDescription(item.description || '');
       setTags(safeTags(item.tags).join(', '));
+      setTaggedUsers(safeUsers(item.taggedUsers).join(', '));
       setCollectionId(item.collectionId == null ? 'null' : String(item.collectionId));
     }
   }, [item]);
@@ -962,6 +1034,15 @@ function EditItemDialog({
             <Input value={tags} onChange={(e) => setTags(e.target.value)} data-testid="input-edit-tags" />
           </div>
           <div>
+            <label className="text-xs text-muted-foreground">Tagged users (optional, comma-separated)</label>
+            <Input
+              placeholder="alice, bob"
+              value={taggedUsers}
+              onChange={(e) => setTaggedUsers(e.target.value)}
+              data-testid="input-edit-tagged-users"
+            />
+          </div>
+          <div>
             <label className="text-xs text-muted-foreground">Collection</label>
             <Select value={collectionId} onValueChange={setCollectionId}>
               <SelectTrigger data-testid="select-edit-collection">
@@ -992,6 +1073,10 @@ function EditItemDialog({
                 tags: tags
                   .split(',')
                   .map((t) => t.trim())
+                  .filter(Boolean),
+                taggedUsers: taggedUsers
+                  .split(',')
+                  .map((u) => u.trim().replace(/^@+/, ''))
                   .filter(Boolean),
                 collectionId: collectionId === 'null' ? null : parseInt(collectionId, 10),
               })

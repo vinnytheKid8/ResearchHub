@@ -129,6 +129,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         url,
         collectionId: body.collectionId ?? null,
         tags: JSON.stringify(body.tags ?? []),
+        taggedUsers: JSON.stringify(body.taggedUsers ?? []),
       });
       if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
 
@@ -143,6 +144,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch('/api/items/:id', async (req, res) => {
     const patch: any = { ...req.body };
     if (Array.isArray(patch.tags)) patch.tags = JSON.stringify(patch.tags);
+    if (Array.isArray(patch.taggedUsers)) patch.taggedUsers = JSON.stringify(patch.taggedUsers);
     // Don't allow changing kind after creation
     delete patch.kind;
     const updated = await storage.updateItem(parseInt(req.params.id, 10), patch);
@@ -282,6 +284,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             tags = fields.tags.split(',').map((t) => t.trim()).filter(Boolean);
           }
         }
+        let taggedUsers: string[] = [];
+        if (fields.taggedUsers) {
+          try {
+            const parsed = JSON.parse(fields.taggedUsers);
+            if (Array.isArray(parsed)) taggedUsers = parsed.map(String);
+          } catch {
+            taggedUsers = fields.taggedUsers.split(',').map((t) => t.trim()).filter(Boolean);
+          }
+        }
 
         const created = await storage.createItem({
           kind: 'file',
@@ -295,6 +306,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           url: null,
           collectionId,
           tags: JSON.stringify(tags),
+          taggedUsers: JSON.stringify(taggedUsers),
         });
         const { content: _c, ...rest } = created;
         res.json(rest);

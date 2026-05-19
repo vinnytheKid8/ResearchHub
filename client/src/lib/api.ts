@@ -21,6 +21,7 @@ export interface Item {
   url: string | null;
   collectionId: number | null;
   tags: string;
+  taggedUsers: string;
   position: number;
   createdAt: number;
   updatedAt: number;
@@ -63,6 +64,7 @@ export const api = {
       description?: string;
       collectionId?: number | null;
       tags?: string[];
+      taggedUsers?: string[];
       onProgress?: (loaded: number, total: number) => void;
     },
   ): Promise<Item> => {
@@ -71,6 +73,7 @@ export const api = {
     if (opts?.description) form.append('description', opts.description);
     if (opts?.collectionId != null) form.append('collectionId', String(opts.collectionId));
     if (opts?.tags) form.append('tags', JSON.stringify(opts.tags));
+    if (opts?.taggedUsers) form.append('taggedUsers', JSON.stringify(opts.taggedUsers));
     if (file.type) form.append('mimeType', file.type);
     form.append('file', file, file.name);
 
@@ -105,13 +108,17 @@ export const api = {
     url: string;
     collectionId?: number | null;
     tags?: string[];
+    taggedUsers?: string[];
   }) => {
     const r = await apiRequest('POST', '/api/items', { kind: 'link', ...data });
     return r.json();
   },
   patchItem: async (
     id: number,
-    patch: Partial<Pick<Item, 'name' | 'description' | 'url' | 'collectionId'>> & { tags?: string[] },
+    patch: Partial<Pick<Item, 'name' | 'description' | 'url' | 'collectionId'>> & {
+      tags?: string[];
+      taggedUsers?: string[];
+    },
   ) => {
     const r = await apiRequest('PATCH', `/api/items/${id}`, patch);
     return r.json();
@@ -133,6 +140,17 @@ export function safeTags(tags: string): string[] {
   } catch {
     return [];
   }
+}
+
+export const safeUsers = safeTags;
+
+export function formatUploadedAt(ms: number | null | undefined): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const date = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `${date} · ${time}`;
 }
 
 export function formatBytes(n: number | null | undefined): string {

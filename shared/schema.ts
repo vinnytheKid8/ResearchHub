@@ -35,6 +35,7 @@ export const items = sqliteTable("items", {
   // Organization
   collectionId: integer("collection_id"),
   tags: text("tags").notNull().default("[]"), // JSON array
+  taggedUsers: text("tagged_users").notNull().default("[]"), // JSON array of free-form user names (@-style)
   position: integer("position").notNull().default(0),
 
   createdAt: integer("created_at").notNull(),

@@ -189,6 +189,7 @@ Form fields:
 - `name` — display name (required)
 - `collectionId` — numeric collection id, or omit for Unfiled
 - `tags` — JSON-encoded string array, e.g. `["funding","auto"]`
+- `taggedUsers` — JSON-encoded string array of free-form user names, e.g. `["alice","bob"]`
 - `description` — optional notes
 
 Server streams the file body straight to `uploads/YYYY/MM/<random>_<filename>` under `HUB_DATA_DIR`. The Node process buffers no more than ~1 MB at a time. Per-file cap = `HUB_MAX_UPLOAD_MB` (default 5120 = 5 GB).

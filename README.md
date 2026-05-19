@@ -11,7 +11,7 @@ No login, no accounts. Anyone who can reach the URL sees the same library — me
 - **Collections** — group items, pick a color, edit/delete from the Collections page.
 - **Open all** — opens every item in the current view as new browser tabs (links 302 to their URL, files render inline).
 - **Dashboard view** — server-rendered tiled iframe page at `/dashboard/:collectionId` with 1/2/3/4 column toggles. Open it directly or click "Dashboard" on a collection card.
-- **Search + tags** — quick text filter and tag chips on each card.
+- **Search + tags** — quick text filter and tag chips on each card. Each item also tracks its upload date/time (shown on every card) and an optional list of tagged users (`@alice, @bob`).
 - **Dark/light theme** — toggle in the top-right; defaults to your OS preference.
 
 ## Requirements
@@ -83,7 +83,7 @@ Runs Express + Vite on the same port with HMR. The frontend lives under `client/
 | `GET /api/collections` | list with item counts |
 | `GET /api/items?collection_id=N\|unfiled&kind=file\|link` | filtered item list (no file content) |
 | `POST /api/items` | create a link item or small JSON-bodied file (used for scripts; subject to Express body limits — prefer the upload endpoint below) |
-| `POST /api/items/upload` | **streaming multipart upload** for files of any size up to `HUB_MAX_UPLOAD_MB`. Fields: `file` (the file part), `name`, optional `collectionId`, optional `tags` (JSON array string), optional `description` |
+| `POST /api/items/upload` | **streaming multipart upload** for files of any size up to `HUB_MAX_UPLOAD_MB`. Fields: `file` (the file part), `name`, optional `collectionId`, optional `tags` (JSON array string), optional `taggedUsers` (JSON array string of user names), optional `description` |
 | `GET /api/items/:id/raw[?download=1]` | raw HTML body with proper mime; streams from disk when the item is a streamed upload |
 | `DELETE /api/items/:id` | removes the row and unlinks the on-disk file |
 | `GET /view/:id` | file raw or 302 → URL for links (used by "Open all") |
